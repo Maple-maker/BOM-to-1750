@@ -39,25 +39,35 @@ def group_words_to_lines(words, y_tol=3.0):
             lines[-1]["w"].append((x0, t))
     return lines
 
-def extract_pdf_text_rows(pdf_path: str):
-    """Generic column-based parser. Works for some BOMs."""
+def _extract_pdf_text_rows(pdf_path: str):
+    """
+    Generic column-based parser. Works for some BOMs.
+    (This is the ONE real function; the public names below are aliases.)
+    """
     doc = fitz.open(pdf_path)
     items = []
     for page in doc:
         words = page.get_text("words")
         if not words:
             continue
+
         W = page.rect.width
-        cols = {"MAT": (0.06*W, 0.32*W), "DESC": (0.33*W, 0.82*W), "QTY": (0.83*W, 0.98*W)}
+        cols = {
+            "MAT": (0.06 * W, 0.32 * W),
+            "DESC": (0.33 * W, 0.82 * W),
+            "QTY": (0.83 * W, 0.98 * W),
+        }
+
         lines = group_words_to_lines(words, y_tol=3.0)
         for L in lines:
             toks = sorted(L["w"], key=lambda z: z[0])
-            mat = " ".join([t for x,t in toks if cols["MAT"][0] <= x <= cols["MAT"][1]]).strip()
-            desc = " ".join([t for x,t in toks if cols["DESC"][0] <= x <= cols["DESC"][1]]).strip()
-            qtys = " ".join([t for x,t in toks if cols["QTY"][0] <= x <= cols["QTY"][1]]).strip()
+            mat = " ".join([t for x, t in toks if cols["MAT"][0] <= x <= cols["MAT"][1]]).strip()
+            desc = " ".join([t for x, t in toks if cols["DESC"][0] <= x <= cols["DESC"][1]]).strip()
+            qtys = " ".join([t for x, t in toks if cols["QTY"][0] <= x <= cols["QTY"][1]]).strip()
 
             if not mat or not desc or not qtys:
                 continue
+
             up = (mat + " " + desc).upper()
             if any(b in up for b in BADWORDS):
                 continue
@@ -71,8 +81,17 @@ def extract_pdf_text_rows(pdf_path: str):
                 continue
 
             items.append({"mat": mat_tok, "desc": re.sub(r"\s{2,}", " ", desc).strip(), "qty": qty})
+
     doc.close()
     return items
+
+
+# ✅ BOTH PUBLIC NAMES EXIST FOREVER (no more NameError)
+def extract_pdf_text_rows(pdf_path: str):
+    return _extract_pdf_text_rows(pdf_path)
+
+def extract_pdf_text_rows(pdf_path: str):
+    return _extract_pdf_text_rows(pdf_path)
 
 # Backwards compatible alias (older code used this name)
 extract_pdf_text_rows = extract_pdf_text_rows

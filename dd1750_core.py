@@ -338,7 +338,7 @@ def generate_dd1750_from_pdf(
     qty_max_reasonable = int(cfg.get("qty_max_reasonable", 999))
 
     # 1) Try generic text-based parser
-    items = [] if force_ocr else extract_pdf_text_rows(bom_pdf)
+    items = [] if force_ocr else _extract_pdf_text_rows(bom_pdf)
 
     # 2) If too few items, try TM listing parser (B49-style)
     if not force_ocr and len(items) < 10:

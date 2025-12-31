@@ -1,4 +1,10 @@
-import math, os, re, csv
+"""
+DD1750 core logic (clean stack)
+- Fixes NameError by guaranteeing extract_pdf_text_rows exists
+- Uses _extract_pdf_text_rows internally (single source of truth)
+- Adds version string so you can confirm Railway is running the new build
+"""
+import os, re, math, csv
 from collections import OrderedDict
 
 import fitz  # PyMuPDF
@@ -12,7 +18,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 
-# Phrases to ignore when scanning BOM text
+__VERSION__ = "2025-12-31.clean-stack.1"
+
 BADWORDS = [
     "END ITEM","PUB","PAGE","DATE","IMAGE","LIN","DESC","ACOEI",
     "COMPONENT OF END","SLOC","UIC","NIIN","AUTH","QTYOH",
@@ -21,12 +28,12 @@ BADWORDS = [
 ]
 
 def load_cfg(path: str) -> dict:
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def clean_mat(token: str) -> str:
     token = str(token).split("-C")[0]
-    return re.sub(r"[^0-9A-Za-z/\-]", "", token)
+    return re.sub(r"[^0-9A-Za-z/\\-]", "", token)
 
 def group_words_to_lines(words, y_tol=3.0):
     lines = []
@@ -39,11 +46,8 @@ def group_words_to_lines(words, y_tol=3.0):
             lines[-1]["w"].append((x0, t))
     return lines
 
+# ---------------- PDF TEXT PARSER (generic column style) ----------------
 def _extract_pdf_text_rows(pdf_path: str):
-    """
-    Generic column-based parser. Works for some BOMs.
-    (This is the ONE real function; the public names below are aliases.)
-    """
     doc = fitz.open(pdf_path)
     items = []
     for page in doc:
@@ -52,18 +56,13 @@ def _extract_pdf_text_rows(pdf_path: str):
             continue
 
         W = page.rect.width
-        cols = {
-            "MAT": (0.06 * W, 0.32 * W),
-            "DESC": (0.33 * W, 0.82 * W),
-            "QTY": (0.83 * W, 0.98 * W),
-        }
-
+        cols = {"MAT": (0.06*W, 0.32*W), "DESC": (0.33*W, 0.82*W), "QTY": (0.83*W, 0.98*W)}
         lines = group_words_to_lines(words, y_tol=3.0)
         for L in lines:
             toks = sorted(L["w"], key=lambda z: z[0])
-            mat = " ".join([t for x, t in toks if cols["MAT"][0] <= x <= cols["MAT"][1]]).strip()
-            desc = " ".join([t for x, t in toks if cols["DESC"][0] <= x <= cols["DESC"][1]]).strip()
-            qtys = " ".join([t for x, t in toks if cols["QTY"][0] <= x <= cols["QTY"][1]]).strip()
+            mat = " ".join([t for x,t in toks if cols["MAT"][0] <= x <= cols["MAT"][1]]).strip()
+            desc = " ".join([t for x,t in toks if cols["DESC"][0] <= x <= cols["DESC"][1]]).strip()
+            qtys = " ".join([t for x,t in toks if cols["QTY"][0] <= x <= cols["QTY"][1]]).strip()
 
             if not mat or not desc or not qtys:
                 continue
@@ -81,23 +80,15 @@ def _extract_pdf_text_rows(pdf_path: str):
                 continue
 
             items.append({"mat": mat_tok, "desc": re.sub(r"\s{2,}", " ", desc).strip(), "qty": qty})
-
     doc.close()
     return items
 
-
-# ✅ BOTH PUBLIC NAMES EXIST FOREVER (no more NameError)
+# ✅ GUARANTEED alias to prevent NameError forever
 def extract_pdf_text_rows(pdf_path: str):
     return _extract_pdf_text_rows(pdf_path)
 
-def extract_pdf_text_rows(pdf_path: str):
-    return _extract_pdf_text_rows(pdf_path)
-
-# Backwards compatible alias (older code used this name)
-extract_pdf_text_rows = extract_pdf_text_rows
-
+# ---------------- B49/TM "COMPONENT LISTING / HAND RECEIPT" parser ----------------
 def extract_bom_tm_listing(pdf_path: str, qty_max_reasonable: int = 999, page_start: int = 0):
-    """Robust parser for TM 'Component Listing / Hand Receipt' PDFs (B49-style)."""
     doc = fitz.open(pdf_path)
     items = []
 
@@ -130,8 +121,8 @@ def extract_bom_tm_listing(pdf_path: str, qty_max_reasonable: int = 999, page_st
                 i += 1
                 continue
 
-            token_only = (len(ln.split()) == 1)
-            if token_only and (mat_digits_re.match(tok) or mat_alnum_re.match(tok)):
+            # material token line (often just the NSN/material)
+            if len(ln.split()) == 1 and (mat_digits_re.match(tok) or mat_alnum_re.match(tok)):
                 mat = clean_mat(tok)
                 desc = None
                 qty = None
@@ -171,6 +162,7 @@ def extract_bom_tm_listing(pdf_path: str, qty_max_reasonable: int = 999, page_st
     doc.close()
     return items
 
+# ---------------- OCR fallback ----------------
 def ocr_page_items(page, dpi=250, qty_max_reasonable: int = 999):
     pix = page.get_pixmap(dpi=dpi)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -190,7 +182,7 @@ def ocr_page_items(page, dpi=250, qty_max_reasonable: int = 999):
             continue
 
         first = line.split()[0]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/\-]{2,}", first):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/\\-]{2,}", first):
             continue
 
         desc = re.sub(r"\s+\d+\s*$", "", line[len(first):]).strip(" ,;:-")
@@ -203,15 +195,15 @@ def ocr_page_items(page, dpi=250, qty_max_reasonable: int = 999):
         items.append({"mat": clean_mat(first), "desc": re.sub(r"\s{2,}", " ", desc).strip(), "qty": qty})
     return items
 
-def extract_pdf_ocr_rows(pdf_path: str, dpi=250, page_start=0, page_end=None, qty_max_reasonable: int = 999):
+def extract_pdf_ocr_rows(pdf_path: str, dpi=250, page_start=0, qty_max_reasonable: int = 999):
     doc = fitz.open(pdf_path)
     items = []
-    end = page_end if page_end is not None else len(doc)
-    for i in range(page_start, min(end, len(doc))):
+    for i in range(page_start, len(doc)):
         items.extend(ocr_page_items(doc[i], dpi=dpi, qty_max_reasonable=qty_max_reasonable))
     doc.close()
     return items
 
+# ---------------- Excel ----------------
 def extract_excel_rows(excel_path: str, sheet=None, col_desc="Description", col_mat="Material", col_qty="OH QTY"):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     ws = wb[sheet] if sheet else wb.active
@@ -238,7 +230,6 @@ def extract_excel_rows(excel_path: str, sheet=None, col_desc="Description", col_
             continue
         if qty <= 0:
             continue
-
         items.append({"mat": clean_mat(mat), "desc": str(desc).strip(), "qty": qty})
     return items
 
@@ -250,13 +241,14 @@ def aggregate(items):
     return [{"mat": k[0], "desc": k[1], "qty": v} for k,v in agg.items()]
 
 def write_audit(items, out_csv_path, qty_max):
-    with open(out_csv_path, "w", newline="") as f:
+    with open(out_csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["line","mat","desc","qty","flag"])
         for i,it in enumerate(items, start=1):
             flag = "SUSPICIOUS_QTY" if it["qty"] > qty_max else ""
             w.writerow([i, it["mat"], it["desc"], it["qty"], flag])
 
+# ---------------- PDF overlay & merge ----------------
 def draw_overlay(overlay_pdf, items, cfg, label="NSN"):
     L = cfg["layout"]
     ipp = int(cfg["items_per_page"])
@@ -335,23 +327,23 @@ def generate_dd1750_from_pdf(
     page_start=0,
     label="NSN"
 ):
-    qty_max_reasonable = int(cfg.get("qty_max_reasonable", 999))
+    qty_max = int(cfg.get("qty_max_reasonable", 999))
 
-    # 1) Try generic text-based parser
+    # 1) Generic text parser (never NameError)
     items = [] if force_ocr else _extract_pdf_text_rows(bom_pdf)
 
-    # 2) If too few items, try TM listing parser (B49-style)
-    if not force_ocr and len(items) < 10:
-        tm_items = extract_bom_tm_listing(bom_pdf, qty_max_reasonable=qty_max_reasonable, page_start=int(page_start))
+    # 2) If too few items, try TM listing parser (B49 style)
+    if (not force_ocr) and len(items) < 10:
+        tm_items = extract_bom_tm_listing(bom_pdf, qty_max_reasonable=qty_max, page_start=int(page_start))
         if len(tm_items) > len(items):
             items = tm_items
 
     # 3) OCR only if forced OR nothing found
     if force_ocr or len(items) == 0:
-        items = extract_pdf_ocr_rows(bom_pdf, dpi=int(ocr_dpi), page_start=int(page_start), qty_max_reasonable=qty_max_reasonable)
+        items = extract_pdf_ocr_rows(bom_pdf, dpi=int(ocr_dpi), page_start=int(page_start), qty_max_reasonable=qty_max)
 
     items = aggregate(items)
-    write_audit(items, out_audit_csv, qty_max_reasonable)
+    write_audit(items, out_audit_csv, qty_max)
 
     overlay_tmp = os.path.splitext(out_pdf)[0] + "_OVERLAY.pdf"
     draw_overlay(overlay_tmp, items, cfg, label=label)
@@ -371,10 +363,10 @@ def generate_dd1750_from_excel(
     col_qty="OH QTY",
     label="NSN"
 ):
-    qty_max_reasonable = int(cfg.get("qty_max_reasonable", 999))
+    qty_max = int(cfg.get("qty_max_reasonable", 999))
     items = extract_excel_rows(excel_path, sheet=sheet, col_desc=col_desc, col_mat=col_mat, col_qty=col_qty)
     items = aggregate(items)
-    write_audit(items, out_audit_csv, qty_max_reasonable)
+    write_audit(items, out_audit_csv, qty_max)
 
     overlay_tmp = os.path.splitext(out_pdf)[0] + "_OVERLAY.pdf"
     draw_overlay(overlay_tmp, items, cfg, label=label)

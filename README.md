@@ -1,6 +1,9 @@
-# BOM-to-1750 (Web Uploader)
+# BOM-to-1750 (Clean Stack)
 
 ## Deploy (Railway)
-- Set Builder to Dockerfile
-- Commit/push this repo
-- Railway will produce a public URL anyone can open and use
+1. Replace your repo contents with this stack.
+2. Commit + push.
+3. Railway -> Settings -> Clear Build Cache -> Redeploy.
+4. Open the site and verify the version string at the top changes.
+
+If the version string does not change, you are still serving an old cached build/branch.

@@ -1,8 +1,8 @@
-import os
-import tempfile
+import os, tempfile
 import streamlit as st
 
 from dd1750_core import (
+    __VERSION__,
     load_cfg,
     generate_dd1750_from_pdf,
     generate_dd1750_from_excel,
@@ -10,9 +10,8 @@ from dd1750_core import (
 )
 
 st.set_page_config(page_title="BOM-to-1750", layout="wide")
-
 st.title("BOM-to-1750")
-st.caption("Upload a BOM (PDF or Excel) + a blank DD1750 template PDF. Generates a multi-page DD1750 + audit CSV.")
+st.caption(f"Uploader version: {__VERSION__} (if this doesn't change after deploy, you're on cached/old code)")
 
 cfg = load_cfg("config.yaml")
 
@@ -27,10 +26,8 @@ with tab1:
 
         st.subheader("Options")
         label = st.selectbox("Label under description", ["NSN", "SN"], index=0)
-
         page_start = st.number_input("Start parsing PDF at page (0-based)", min_value=0, value=0, step=1)
-
-        force_ocr = st.checkbox("Force OCR (for scanned PDFs)", value=False)
+        force_ocr = st.checkbox("Force OCR (only for scanned/image PDFs)", value=False)
         ocr_dpi = st.slider("OCR DPI", min_value=150, max_value=400, value=250, step=10)
 
     with c2:
@@ -40,8 +37,7 @@ with tab1:
         col_mat = st.text_input("Material/NSN header", value="Material")
         col_qty = st.text_input("Qty header", value="OH QTY")
 
-        st.info("Tip: For B49-style TM 'Component Listing / Hand Receipt' PDFs, keep Force OCR OFF. "
-                "OCR can misread gridlines and create insane quantities.")
+        st.info("If you keep seeing the same NameError, Railway is deploying old code. Clear build cache and redeploy.")
 
     if st.button("Generate DD1750", type="primary", disabled=not (bom_file and template_file)):
         with tempfile.TemporaryDirectory() as td:
@@ -86,10 +82,8 @@ with tab1:
                 st.exception(e)
             else:
                 st.success(f"Generated {len(items)} line items.")
-
                 with open(out_pdf, "rb") as f:
                     st.download_button("Download DD1750 PDF", f, file_name="DD1750_OUTPUT.pdf", mime="application/pdf")
-
                 with open(out_csv, "rb") as f:
                     st.download_button("Download AUDIT CSV", f, file_name="DD1750_AUDIT.csv", mime="text/csv")
 

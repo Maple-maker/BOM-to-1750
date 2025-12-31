@@ -15,7 +15,8 @@ from reportlab.lib.units import inch
 BADWORDS = [
     "END ITEM","PUB","PAGE","DATE","IMAGE","LIN","DESC","ACOEI",
     "COMPONENT OF END","SLOC","UIC","NIIN","AUTH","QTYOH",
-    "COEI","BOM","LOCATION","LOCID","WTY","ARC","CIIC","UI","SCMC"
+    "COEI","BOM","LOCATION","LOCID","WTY","ARC","CIIC","UI","SCMC",
+    "COMPONENT LISTING", "HAND RECEIPT", "BASIC ISSUE ITEMS"
 ]
 
 def load_cfg(path: str) -> dict:
@@ -270,6 +271,86 @@ def merge_template(template_pdf, overlay_pdf, out_pdf):
 
     with open(out_pdf, "wb") as f:
         w.write(f)
+def extract_bom_tm_listing(pdf_path: str):
+    """
+    Robust parser for Army TM 'Component Listing / Hand Receipt' PDFs like B49.pdf.
+    It reads the whole page text and extracts:
+      - Material/NSN token
+      - Description (caps/comma line)
+      - OH Qty (last integer on the line containing UI like EA/KT/etc)
+    """
+    doc = fitz.open(pdf_path)
+    items = []
+
+    # Material tokens in these BOMs can be 9-digit NSNs or alphanumeric (e.g., 1964850U)
+    mat_re = re.compile(r"^[A-Z0-9][A-Z0-9\-\/]{4,}$")
+    # Quantity is almost always the last integer on the "X U EA ..." line
+    qty_re = re.compile(r"(\d+)\s*$")
+
+    for page in doc:
+        text = page.get_text("text")
+        if not text:
+            continue
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+
+            # Candidate material line is usually just a token by itself (often digits)
+            if mat_re.match(ln) and "C_" not in ln and "~" not in ln:
+                mat = clean_mat(ln)
+
+                # Find a description line soon after (skip C_ lines and LV letters)
+                desc = None
+                qty = None
+
+                j = i + 1
+                # look ahead up to ~8 lines for description + qty
+                while j < min(i + 10, len(lines)):
+                    cand = lines[j]
+
+                    up = cand.upper()
+                    if any(b in up for b in BADWORDS):
+                        j += 1
+                        continue
+
+                    # Skip C_ lines like "C_75Q65 ~ 1354640W"
+                    if cand.startswith("C_") or " ~ " in cand:
+                        j += 1
+                        continue
+
+                    # Many lines start with LV like "B" alone; skip those
+                    if len(cand) == 1 and cand.isalpha():
+                        j += 1
+                        continue
+
+                    # First good all-caps/comma-ish line becomes the description
+                    if desc is None:
+                        # Heuristic: likely description has commas or multiple words
+                        if ("," in cand) or (len(cand.split()) >= 2):
+                            desc = cand
+
+                    # Qty line typically contains the UI (EA/KT) and ends with qty
+                    # Example: "... X U EA 9K 2"
+                    if qty is None:
+                        m = qty_re.search(cand)
+                        if m and (" EA " in f" {cand} " or " KT " in f" {cand} "):
+                            qty = int(m.group(1))
+
+                    if desc is not None and qty is not None:
+                        break
+                    j += 1
+
+                if desc and qty and qty > 0:
+                    items.append({"mat": mat, "desc": re.sub(r"\s{2,}", " ", desc).strip(), "qty": qty})
+
+                i = j
+            else:
+                i += 1
+
+    doc.close()
+    return items
 
 def generate_dd1750_from_pdf(
     bom_pdf,

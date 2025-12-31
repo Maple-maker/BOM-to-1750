@@ -41,52 +41,101 @@ def group_words_to_lines(words, y_tol=3.0):
         else:
             lines[-1]["w"].append((x0, t))
     return lines
-
-def extract_pdf_text_rows(pdf_path: str):
+def extract_bom_tm_listing(pdf_path: str, qty_max_reasonable: int = 999):
+    """
+    Robust parser for Army TM 'Component Listing / Hand Receipt' PDFs (B49-style).
+    Avoids OCR. Uses embedded text and strict heuristics to prevent garbage counts.
+    """
     doc = fitz.open(pdf_path)
     items = []
+
+    # Material tokens: either 7-12 digits (common NSN-like) OR long alphanumeric part numbers
+    mat_digits_re = re.compile(r"^\d{7,12}$")
+    mat_alnum_re  = re.compile(r"^[A-Z0-9]{6,}$")
+
+    # Reject obvious junk tokens we see from these BOMs
+    reject_mat_re = re.compile(r"^(C_|COEI|LV|WTY|ARC|CIIC|SCMC|UI|AUTH|QTY|OH|QTYOH)", re.I)
+
+    # Qty is last integer on the line
+    qty_re = re.compile(r"(\d+)\s*$")
+
+    def is_good_desc(s: str) -> bool:
+        up = s.upper()
+        if any(b in up for b in BADWORDS):
+            return False
+        # reject the garbage lines like "C_34914 ~ 690"
+        if "C_" in s or "~" in s:
+            return False
+        # needs at least some letters and 2+ words or comma structure
+        letters = sum(ch.isalpha() for ch in s)
+        if letters < 4:
+            return False
+        if len(s.split()) < 2 and "," not in s:
+            return False
+        return True
+
     for page in doc:
-        words = page.get_text("words")
-        if not words:
-            continue
+        text = page.get_text("text") or ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-        W = page.rect.width
-        cols = {
-            "MAT": (0.06 * W, 0.32 * W),
-            "DESC": (0.33 * W, 0.82 * W),
-            "QTY": (0.83 * W, 0.98 * W),
-        }
+        i = 0
+        while i < len(lines):
+            ln = lines[i].strip()
+            tok = ln.split()[0] if ln else ""
 
-        lines = group_words_to_lines(words, y_tol=3.0)
-        for L in lines:
-            toks = sorted(L["w"], key=lambda z: z[0])
-
-            mat = " ".join([t for x, t in toks if cols["MAT"][0] <= x <= cols["MAT"][1]]).strip()
-            desc = " ".join([t for x, t in toks if cols["DESC"][0] <= x <= cols["DESC"][1]]).strip()
-            qtys = " ".join([t for x, t in toks if cols["QTY"][0] <= x <= cols["QTY"][1]]).strip()
-
-            if not mat or not desc or not qtys:
+            # Material candidate must be a clean token-only line OR very short line
+            if reject_mat_re.search(tok):
+                i += 1
                 continue
 
-            up = (mat + " " + desc).upper()
-            if any(b in up for b in BADWORDS):
-                continue
+            token_only = (len(ln.split()) == 1)
 
-            mat_tok = clean_mat(mat.split()[0])
-            m = re.findall(r"\d+", qtys)
-            if not m:
-                continue
-            qty = int(m[-1])
+            mat_candidate = tok
+            if token_only and (mat_digits_re.match(mat_candidate) or mat_alnum_re.match(mat_candidate)):
+                mat = clean_mat(mat_candidate)
 
-            # Remove OH QTY == 0 items
-            if qty <= 0:
-                continue
+                desc = None
+                qty = None
 
-            items.append({
-                "mat": mat_tok,
-                "desc": re.sub(r"\s{2,}", " ", desc).strip(),
-                "qty": qty
-            })
+                # Look ahead for description + qty
+                j = i + 1
+                while j < min(i + 12, len(lines)):
+                    cand = lines[j].strip()
+
+                    # Skip “C_… ~ …” and other control rows
+                    if cand.startswith("C_") or "~" in cand:
+                        j += 1
+                        continue
+
+                    # skip single LV letters
+                    if len(cand) == 1 and cand.isalpha():
+                        j += 1
+                        continue
+
+                    # Try to grab description
+                    if desc is None and is_good_desc(cand):
+                        desc = cand
+
+                    # Try to grab qty from a line that contains EA/KT and ends with a number
+                    if qty is None:
+                        m = qty_re.search(cand)
+                        if m and (" EA " in f" {cand} " or " KT " in f" {cand} "):
+                            q = int(m.group(1))
+                            if 0 < q <= qty_max_reasonable:
+                                qty = q
+
+                    if desc is not None and qty is not None:
+                        break
+
+                    j += 1
+
+                if desc and qty:
+                    items.append({"mat": mat, "desc": desc, "qty": qty})
+                    i = j + 1
+                else:
+                    i += 1
+            else:
+                i += 1
 
     doc.close()
     return items
